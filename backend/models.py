@@ -9,6 +9,7 @@ class Dispensary(Base):
     __tablename__ = 'dispensaries'
 
     id = Column(Integer, primary_key=True)
+    place_id = Column(String, unique=True, index=True)
     name = Column(String, nullable=False)
     address = Column(String)
     latitude = Column(Float)
