@@ -26,6 +26,16 @@ echo "Stopping MJ-ITAD services..."
 echo "=========================================="
 echo
 
+# Stop Frontend
+frontend_pids=$( (lsof -tiTCP:3000 -sTCP:LISTEN 2>/dev/null || true; lsof -tiTCP:3001 -sTCP:LISTEN 2>/dev/null || true) | cat )
+if [ -n "$frontend_pids" ]; then
+  log_info "Stopping frontend dev server on ports 3000/3001..."
+  echo "$frontend_pids" | sort -u | xargs kill >/dev/null 2>&1 || true
+  log_success "Frontend stopped"
+else
+  echo "Frontend already stopped"
+fi
+
 # Stop Backend
 if docker ps --format '{{.Names}}' | grep -qx 'mj-itad-backend'; then
   log_info "Stopping backend..."

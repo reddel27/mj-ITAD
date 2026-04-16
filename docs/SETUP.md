@@ -57,7 +57,7 @@ If you prefer to set up services manually, follow the steps below.
 2. Build and run backend with Docker:
    ```bash
    docker build -t mj-itad-backend .
-   docker run --name mj-itad-backend --network mj-itad-net -e DATABASE_URL=postgresql://postgres:password@mj-itad-db:5432/mj_itad -e ALLOWED_ORIGINS=http://localhost:3000 -p 8000:8000 -d mj-itad-backend
+   docker run --name mj-itad-backend --network mj-itad-net -e DATABASE_URL=postgresql://postgres:password@mj-itad-db:5432/mj_itad -e ALLOWED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001,http://127.0.0.1:3001 -p 8000:8000 -d mj-itad-backend
    ```
 
 3. Optional backend environment variables:
@@ -70,16 +70,28 @@ If you prefer to set up services manually, follow the steps below.
    docker exec mj-itad-backend python init_db.py
    ```
 
-5. Test API:
+5. Apply schema migrations (including `place_id` unique index updates):
+   ```bash
+   docker exec mj-itad-backend python migrate_db.py
+   ```
+
+6. Test API:
    ```bash
    curl http://localhost:8000/
    curl "http://localhost:8000/dispensaries?lat=37.7749&lng=-122.4194&radius=5000"
    ```
 
-6. Run backend tests:
+7. Test menu scraping ingestion API:
+   ```bash
+   curl -X POST http://localhost:8000/ingest/menu \
+     -H "Content-Type: application/json" \
+     -d '{"dispensary_id":1,"menu_url":"https://example.com/menu"}'
+   ```
+
+8. Run backend tests:
    ```bash
    cd backend
-   pytest -q
+   python3 -m pytest -q
    ```
 
 ## Frontend Setup

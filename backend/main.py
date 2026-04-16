@@ -10,6 +10,7 @@ from sqlalchemy import and_
 from dotenv import load_dotenv
 from pydantic import BaseModel
 from typing import List, Optional
+from scraper import scrape_products_from_url
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -43,9 +44,22 @@ class ProductListResponse(BaseModel):
     products: List[ProductResponse]
 
 
+class MenuIngestRequest(BaseModel):
+    dispensary_id: int
+    menu_url: str
+
+
+class MenuIngestResponse(BaseModel):
+    ingested_count: int
+    skipped_count: int
+
+
 allowed_origins = [
     origin.strip()
-    for origin in os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
+    for origin in os.getenv(
+        "ALLOWED_ORIGINS",
+        "http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001,http://127.0.0.1:3001",
+    ).split(",")
     if origin.strip()
 ]
 
@@ -199,3 +213,49 @@ async def get_products(dispensary_id: int, db: Session = Depends(get_db)):
             "in_stock": product.in_stock
         } for product in products
     ]}
+
+
+@app.post("/ingest/menu", response_model=MenuIngestResponse)
+async def ingest_menu(payload: MenuIngestRequest, db: Session = Depends(get_db)):
+    """
+    Scrape and ingest menu products from a dispensary page URL.
+    """
+    dispensary = db.query(Dispensary).filter(Dispensary.id == payload.dispensary_id).first()
+    if not dispensary:
+        raise HTTPException(status_code=404, detail="Dispensary not found")
+
+    scraped_products = scrape_products_from_url(payload.menu_url)
+    if not scraped_products:
+        return {"ingested_count": 0, "skipped_count": 0}
+
+    ingested_count = 0
+    skipped_count = 0
+    for item in scraped_products:
+        existing = db.query(Product).filter(
+            Product.dispensary_id == payload.dispensary_id,
+            Product.name == item["name"],
+            Product.price == item["price"],
+            Product.unit == item.get("unit"),
+        ).first()
+
+        if existing:
+            skipped_count += 1
+            continue
+
+        product = Product(
+            dispensary_id=payload.dispensary_id,
+            name=item["name"],
+            category=item.get("category"),
+            strain=item.get("strain"),
+            price=item["price"],
+            unit=item.get("unit") or "each",
+            description=item.get("description"),
+            in_stock=1,
+            thc_content=item.get("thc_content"),
+            cbd_content=item.get("cbd_content"),
+        )
+        db.add(product)
+        ingested_count += 1
+
+    db.commit()
+    return {"ingested_count": ingested_count, "skipped_count": skipped_count}

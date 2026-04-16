@@ -32,6 +32,41 @@ log_warning() {
   echo -e "${YELLOW}⚠ ${1}${NC}"
 }
 
+BACKEND_DATABASE_URL="postgresql://postgres:password@mj-itad-db:5432/mj_itad"
+BACKEND_ALLOWED_ORIGINS="http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001,http://127.0.0.1:3001"
+
+stop_frontend_ports() {
+  local frontend_pids
+  frontend_pids=$( (lsof -tiTCP:3000 -sTCP:LISTEN 2>/dev/null || true; lsof -tiTCP:3001 -sTCP:LISTEN 2>/dev/null || true) | cat )
+  if [ -n "$frontend_pids" ]; then
+    log_warning "Stopping existing frontend listeners on ports 3000/3001..."
+    echo "$frontend_pids" | sort -u | xargs kill >/dev/null 2>&1 || true
+    sleep 1
+  fi
+}
+
+backend_container_needs_recreate() {
+  if ! docker ps -a --format '{{.Names}}' | grep -qx 'mj-itad-backend'; then
+    return 0
+  fi
+
+  local current_env
+  current_env=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' mj-itad-backend 2>/dev/null || true)
+  if ! printf '%s\n' "$current_env" | grep -qx "DATABASE_URL=$BACKEND_DATABASE_URL"; then
+    return 0
+  fi
+
+  if ! printf '%s\n' "$current_env" | grep -qx "ALLOWED_ORIGINS=$BACKEND_ALLOWED_ORIGINS"; then
+    return 0
+  fi
+
+  if ! docker inspect -f '{{json .NetworkSettings.Networks}}' mj-itad-backend 2>/dev/null | grep -q 'mj-itad-net'; then
+    return 0
+  fi
+
+  return 1
+}
+
 # Check Docker is available
 if ! command -v docker &> /dev/null; then
   echo "Docker is not installed or not in PATH. Please install Docker."
@@ -86,30 +121,25 @@ docker build -t mj-itad-backend . > /dev/null 2>&1
 log_success "Backend image built"
 
 log_info "Starting backend container..."
-if docker ps -a --format '{{.Names}}' | grep -qx 'mj-itad-backend'; then
-  if docker ps --format '{{.Names}}' | grep -qx 'mj-itad-backend'; then
-    log_success "Backend is already running"
-  else
-    log_info "Removing stopped backend container..."
+if backend_container_needs_recreate; then
+  if docker ps -a --format '{{.Names}}' | grep -qx 'mj-itad-backend'; then
+    log_warning "Recreating backend container to apply current config..."
     docker rm -f mj-itad-backend > /dev/null
-    docker run \
-      --name mj-itad-backend \
-      --network mj-itad-net \
-      -e DATABASE_URL=postgresql://postgres:password@mj-itad-db:5432/mj_itad \
-      -e ALLOWED_ORIGINS=http://localhost:3000 \
-      -p 8000:8000 \
-      -d mj-itad-backend > /dev/null
-    sleep 2
-    log_success "Backend started"
   fi
-else
   docker run \
     --name mj-itad-backend \
     --network mj-itad-net \
-    -e DATABASE_URL=postgresql://postgres:password@mj-itad-db:5432/mj_itad \
-    -e ALLOWED_ORIGINS=http://localhost:3000 \
+    -e DATABASE_URL=$BACKEND_DATABASE_URL \
+    -e ALLOWED_ORIGINS=$BACKEND_ALLOWED_ORIGINS \
     -p 8000:8000 \
     -d mj-itad-backend > /dev/null
+  sleep 2
+  log_success "Backend started"
+elif docker ps --format '{{.Names}}' | grep -qx 'mj-itad-backend'; then
+  log_success "Backend is already running with current config"
+else
+  log_info "Starting existing backend container..."
+  docker start mj-itad-backend > /dev/null
   sleep 2
   log_success "Backend started"
 fi
@@ -117,6 +147,10 @@ fi
 log_info "Initializing database schema..."
 docker exec mj-itad-backend python init_db.py > /dev/null 2>&1
 log_success "Database initialized"
+
+log_info "Applying database migrations..."
+docker exec mj-itad-backend python migrate_db.py > /dev/null 2>&1
+log_success "Migrations applied"
 echo
 
 # ====================
@@ -124,6 +158,8 @@ echo
 # ====================
 log_info "Starting frontend development server..."
 cd "$PROJECT_ROOT/frontend"
+
+stop_frontend_ports
 
 # Check if node_modules exists
 if [ ! -d "node_modules" ]; then
